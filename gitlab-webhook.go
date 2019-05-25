@@ -3,13 +3,14 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"flag"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
-	"strconv"
 	"syscall"
 )
 
@@ -57,7 +58,6 @@ type ConfigRepository struct {
 
 //Config represents the config file
 type Config struct {
-	Logfile      string
 	Address      string
 	Port         int64
 	Repositories []ConfigRepository
@@ -73,15 +73,26 @@ func PanicIf(err error, what ...string) {
 	}
 }
 
-var config Config
-var configFile string
+var (
+	cfg Config
+)
 
 func main() {
-	args := os.Args
+	var config Config
+	var configFile string
+
+	flag.StringVar(&configFile, "config", "config.json", "configuration file to load")
+
+	flag.Parse()
+
+	if len(flag.Args()) != 0 {
+		log.Fatal("extra arguments provided")
+	}
 
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGHUP)
 
+	// reload configuration on SIGHUP
 	go func() {
 		<-sigc
 		var err error
@@ -92,42 +103,21 @@ func main() {
 		log.Println("config reloaded")
 	}()
 
-	//if we have a "real" argument we take this as conf path to the config file
-	if len(args) > 1 {
-		configFile = args[1]
-	} else {
-		configFile = "config.json"
-	}
-
 	//load config
-	config, err := loadConfig(configFile)
+	var err error
+	cfg, err = loadConfig(configFile)
 	if err != nil {
 		log.Fatalf("Failed to read config: %s", err)
 	}
 
-	//open log file
-	writer, err := os.OpenFile(config.Logfile, os.O_RDWR|os.O_APPEND|os.O_CREATE, 0666)
-	if err != nil {
-		log.Printf("Failed to open log file: %s", err)
-		os.Exit(1)
-	}
-
-	//close logfile on exit
-	defer func() {
-		writer.Close()
-	}()
-
-	//setting logging output
-	log.SetOutput(writer)
-
-	//setting handler
+	// setting handler
 	http.HandleFunc("/", hookHandler)
 
-	address := config.Address + ":" + strconv.FormatInt(config.Port, 10)
+	address := fmt.Sprintf("%s:%d", cfg.Address, cfg.Port)
 
 	log.Println("Listening on " + address)
 
-	//starting server
+	// starting server
 	err = http.ListenAndServe(address, nil)
 	if err != nil {
 		log.Println(err)
@@ -135,6 +125,7 @@ func main() {
 }
 
 func loadConfig(configFile string) (Config, error) {
+	var cfg Config
 	file, err := os.Open(configFile)
 	if err != nil {
 		return Config{}, err
@@ -149,12 +140,12 @@ func loadConfig(configFile string) (Config, error) {
 		return Config{}, err
 	}
 
-	err = json.Unmarshal(buffer[:count], &config)
+	err = json.Unmarshal(buffer[:count], &cfg)
 	if err != nil {
 		return Config{}, err
 	}
 
-	return config, nil
+	return cfg, nil
 }
 
 func hookHandler(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +166,7 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	//find matching config for repository name
-	for _, repo := range config.Repositories {
+	for _, repo := range cfg.Repositories {
 		if repo.Name != hook.Repository.Name {
 			continue
 		}
